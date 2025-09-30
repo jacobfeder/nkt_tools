@@ -15,6 +15,37 @@ logger = logging.getLogger(__name__)
 
 
 class Fianium:
+    REGS = {
+        0x30: ('emission', 'U8'),
+        0x31: ('setup bits', 'U8'),
+        0x32: ('interlock', 'U16'),
+        0x34: ('pulse picker ratio', 'U16'),
+        0x3D: ('max pulse picker ratio', 'U16'),
+        0x36: ('watchdog interval', 'U8'),
+        0x37: ('output power', 'U16'),
+        0x39: ('NIM delay', 'U16'),
+        0x3B: ('user config', 'U16'),
+        0x66: ('status bits', 'U16'),
+    }
+
+    COMM_ERRORS = {
+        1: 'Arises from a registerWrite function with index > 0, if the pre-read fails.',
+        2: 'The function registerCreate has failed.',
+        3: 'The module has reported a BUSY error, the kernel automatically retries on busy but have given up.',
+        4: 'The module has Nacked the register, which typically means non existing register.',
+        5: 'The module has reported a CRC error, which means the received message has CRC errors.',
+        6: 'The module has not responded in time. A module should respond in max. 75 ms',
+        7: 'The module has reported a COM error, which typically means out of sync or garbage error.',
+        8: 'The datatype does not seem to match the register datatype.',
+        9: 'The index seem to be out of range of the register length.',
+        10: 'The specified port is closed error. Could happen if the USB is unplugged in the middel of a sequence.',
+        11: 'The specified register could not be found in the internal register list for the specified device.',
+        12: 'The specified device could not be found in the internal device list.',
+        13: 'The specified portname could not be found.',
+        14: 'The specified portname could not be opened. The port might be in use by another application.',
+        15: 'The function is not allowed to be invoked from within a callback function.',
+    }
+
     STATUS_BITS = {
         0: 'Emission on',
         1: 'Interlock relays off',
@@ -76,6 +107,7 @@ class Fianium:
         self._portname = None
 
     def connect(self):
+        """Connect to the device"""
         # COM ports to look for NKT devices
         ports_to_check = []
         if self._user_supplied_portname:
@@ -130,6 +162,7 @@ class Fianium:
             )
 
     def disconnect(self):
+        """Disconnect from the device, closing the COM port."""
         if self._portname is not None:
             nkt.closePorts(self._portname)
 
@@ -140,40 +173,99 @@ class Fianium:
     def __exit__(self, *args):
         self.disconnect()
 
-    def _check_comm_result(self, comm_result):
-        """Check the return status of a register read."""
+    def read_reg(self, reg_addr):
+        """Read a register from the device, performing error checking.
+
+        Parameters
+        ----------
+        reg_addr : int
+            Register address number to read.
+
+        Raises
+        ------
+        RuntimeError
+            Throws error if there is an issue reading the register.
+
+        """
+        if self._portname is None:
+            raise RuntimeError('Not connected. Call connect() before any driver calls.')
+
+        reg_name, reg_type = self.REGS[reg_addr]
+        if reg_type == 'U8':
+            comm_result, value = nkt.registerReadU8(
+                self._portname,
+                self._module_address,
+                reg_addr,
+                -1
+            )
+        elif reg_type == 'U16':
+            comm_result, value = nkt.registerReadU16(
+                self._portname,
+                self._module_address,
+                reg_addr,
+                -1
+            )
+        else:
+            raise RuntimeError('Unrecognized register type from internal register table.')
+
         if comm_result == 0:
-            return
-        elif comm_result == 1:
-            raise RuntimeError('Arises from a registerWrite function with index > 0, if the pre-read fails.')
-        elif comm_result == 2:
-            raise RuntimeError('The function registerCreate has failed.')
-        elif comm_result == 3:
-            raise RuntimeError('The module has reported a BUSY error, the kernel automatically retries on busy but have given up.')
-        elif comm_result == 4:
-            raise RuntimeError('The module has Nacked the register, which typically means non existing register.')
-        elif comm_result == 5:
-            raise RuntimeError('The module has reported a CRC error, which means the received message has CRC errors.')
-        elif comm_result == 6:
-            raise RuntimeError('The module has not responded in time. A module should respond in max. 75 ms')
-        elif comm_result == 7:
-            raise RuntimeError('The module has reported a COM error, which typically means out of sync or garbage error.')
-        elif comm_result == 8:
-            raise RuntimeError('The datatype does not seem to match the register datatype.')
-        elif comm_result == 9:
-            raise RuntimeError('The index seem to be out of range of the register length.')
-        elif comm_result == 10:
-            raise RuntimeError('The specified port is closed error. Could happen if the USB is unplugged in the middel of a sequence.')
-        elif comm_result == 11:
-            raise RuntimeError('The specified register could not be found in the internal register list for the specified device.')
-        elif comm_result == 12:
-            raise RuntimeError('The specified device could not be found in the internal device list.')
-        elif comm_result == 13:
-            raise RuntimeError('The specified portname could not be found.')
-        elif comm_result == 14:
-            raise RuntimeError('The specified portname could not be opened. The port might be in use by another application.')
-        elif comm_result == 15:
-            raise RuntimeError('The function is not allowed to be invoked from within a callback function.')
+            pass
+        elif comm_result in self.COMM_ERRORS:
+            raise RuntimeError(self.COMM_ERRORS[comm_result])
+        else:
+            raise RuntimeError(f'Unknown error type reading reg {reg_addr:02x}: {comm_result}.')
+
+        logger.debug(f'Read NKT {self.__class__.__name__} on port [{self._portname}] reg {reg_addr:02x} = {value}.')
+
+        return value
+
+    def write_reg(self, reg_addr, reg_val):
+        """Write a register to the device, performing error checking.
+
+        Parameters
+        ----------
+        reg_addr : int
+            Register address number to write to.
+        reg_val : int
+            Value to write to the register.
+
+        Raises
+        ------
+        RuntimeError
+            Throws error if there is an issue writing the register.
+
+        """
+        if self._portname is None:
+            raise RuntimeError('Not connected. Call connect() before any driver calls.')
+
+        reg_name, reg_type = self.REGS[reg_addr]
+        if reg_type == 'U8':
+            comm_result = nkt.registerWriteU8(
+                self._portname,
+                self._module_address,
+                reg_addr,
+                reg_val,
+                -1
+            )
+        elif reg_type == 'U16':
+            comm_result = nkt.registerWriteU16(
+                self._portname,
+                self._module_address,
+                reg_addr,
+                reg_val,
+                -1
+            )
+        else:
+            raise RuntimeError('Unrecognized register type from internal register table.')
+
+        if comm_result == 0:
+            pass
+        elif comm_result in self.COMM_ERRORS:
+            raise RuntimeError(self.COMM_ERRORS[comm_result])
+        else:
+            raise RuntimeError(f'Unknown error type writing reg {reg_addr:02x}: {comm_result}.')
+
+        logger.debug(f'Write NKT {self.__class__.__name__} on port [{self._portname}] reg {reg_addr:02x} = {reg_val:02x}.')
 
     @property
     def emission(self):
@@ -185,19 +277,7 @@ class Fianium:
         bool
             False = emission off; True = emission on
         """
-        register_address = 0x30
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, value = nkt.registerReadU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
+        value = self.read_reg(0x30)
         if value == 3:
             return True
         elif value == 0:
@@ -212,27 +292,14 @@ class Fianium:
         Parameters
         ----------
         state : bool
-            True turns laser on, false turns emission off
+            True turns emission on, false turns emission off.
         """
-        register_address = 0x30
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         if state is True:
             reg_val = 0x03
         else:
             reg_val = 0x00
 
-        comm_result = nkt.registerWriteU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            reg_val,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
+        self.write_reg(0x30, reg_val)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'emission state to [{state}].')
 
@@ -245,55 +312,29 @@ class Fianium:
 
         Returns
         -------
-        str
-            Current setup status of laser based on manual values.
+        tuple(int, str)
+            (Bits, Description) Current setup status of laser based on manual values.
         """
-        register_address = 0x31
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, setup_key = nkt.registerReadU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return self.__class__.SETUP[setup_key]
+        setup_bits = self.read_reg(0x31)
+        return (setup_bits, self.SETUP[setup_bits])
 
     def set_setup(self, setup_key):
         """
         Sets the "setup" of the laser according to options in manual.
 
-        Checks value provided is withing SETUP.keys(),
-        then writes to register 0x16. Get current status w/ status()
+        Checks value provided is withing SETUP.keys(). Get current status w/ status()
 
         Parameters
         ----------
         setup_key : int
             Integer corresponding to a key inside SETUP enum.
         """
-        register_address = 0x31
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        if setup_key not in self._class__.SETUP.keys():
+        if setup_key not in self.SETUP.keys():
             raise ValueError('Invalid setup state key. See SETUP enum for options.')
 
-        comm_result = nkt.registerWriteU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            setup_key,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
+        self.write_reg(reg_addr=0x31, reg_val=setup_key)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
-            f'setup state to [0x{setup_key:02x}] ({self.__class__.SETUP[setup_key]}).')
+            f'setup state to [0x{setup_key:02x}] ({self.SETUP[setup_key]}).')
 
     @property
     def interlock(self):
@@ -311,27 +352,15 @@ class Fianium:
         tuple(int, str)
             (LSB, Desription) returns result according to table in manual.
         """
-        register_address = 0x32
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, reading = nkt.registerRead(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        LSB = reading[0]  # First byte
-        MSB = reading[1]  # Second byte
+        reading = self.read_reg(reg_addr=0x32)
+        LSB = reading & 0x00FF  # First byte
+        MSB = (reading & 0xFF00) >> 8  # Second byte
 
         if MSB == 255:
             return (0, f'Interlock circuit failure')
         else:
             if LSB == 0:
-                reason = output_options[MSB]
+                reason = self.INTERLOCK[MSB]
                 return (LSB, f'Interlocked: {reason}')
             elif LSB == 1:
                 return (LSB, 'Waiting for interlock reset')
@@ -340,7 +369,7 @@ class Fianium:
 
     def set_interlock(self, value):
         """
-        Reset or trip interlock with >0 or 0, respectively.
+        Reset or trip interlock with > 0 or 0, respectively.
 
         Manual:
         If the door interlock is in place, the key switch on the front plate is
@@ -353,35 +382,22 @@ class Fianium:
         Parameters
         ----------
         value: int
-            0 trips interlock. >0 resets interlock.
+            0 trips interlock. > 0 resets interlock.
 
         """
-        register_address = 0x32
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         if value > 0:
             value = 1
         else:
             value = 0
 
-        comm_result = nkt.registerWriteU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            value,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
+        self.write_reg(reg_addr=0x32, reg_val=value)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'interlock state to [0x{value:02x}].')
 
     @property
     def pulse_picker_ratio(self):
         """
-        Get pulse picker ratio by reading register 0x34.
+        Get pulse picker ratio.
 
         Manual:
         For SuperK Fianium Systems featuring the pulse picker option, the
@@ -393,20 +409,7 @@ class Fianium:
         ratio : int
             Pulse picker divide ratio
         """
-        register_address = 0x34
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, pulse_picker_ratio = nkt.registerReadU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return pulse_picker_ratio
+        return self.read_reg(reg_addr=0x34)
 
     def set_pulse_picker_ratio(self, ratio):
         """
@@ -422,27 +425,30 @@ class Fianium:
         ratio : int
             Integer corresponding to the division ratio.
         """
-        register_address = 0x34
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
+        max_pp = self.max_pulse_picker_ratio
+        
         if not isinstance(ratio, int):
             raise ValueError('Pulse picker division ratio must be an integer.')
         if ratio < 1:
             raise ValueError('Pulse picker division ratio must be >= 1.')
+        if ratio > max_pp:
+            raise ValueError(f'Pulse picker division ratio must be <= {max_pp}.')
 
-        comm_result = nkt.registerWriteU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            ratio,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
+        self.write_reg(reg_addr=0x34, reg_val=ratio)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'pulse picker division ratio to [{ratio}].')
+
+    @property
+    def max_pulse_picker_ratio(self):
+        """
+        Get the maximum pulse picker division ratio.
+
+        Parameters
+        ----------
+        ratio : int
+            Integer corresponding to the max division ratio.
+        """
+        return self.read_reg(reg_addr=0x3D)
 
     @property
     def watchdog_interval(self):
@@ -461,20 +467,7 @@ class Fianium:
         interval : int
             Watchdog interval (s)
         """
-        register_address = 0x36
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, watchdog_interval = nkt.registerReadU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return watchdog_interval
+        return self.read_reg(reg_addr=0x36)
 
     def set_watchdog_interval(self, timeout):
         """
@@ -492,21 +485,10 @@ class Fianium:
         timeout : int
             time (seconds) the system will toleratre for communication loss.
         """
-        register_address = 0x36
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         if not isinstance(timeout, int):
             raise ValueError('Watchdog interval must be an integer.')
 
-        nkt.registerWriteU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            timeout,
-            -1
-        )
+        self.write_reg(reg_addr=0x36, reg_val=timeout)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'watchdog interval to [{timeout}] seconds.')
 
@@ -515,58 +497,29 @@ class Fianium:
         """
         Get power level setpoint with 0.1 % precision.
 
-        Read register 0x37 and converts from permille to percent.
-
         Return
         ------
         power_level : float
             Power level setpoint in percent w/ 0.1 % precision.
         """
-        register_address = 0x37
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, power_tenths = nkt.registerReadU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return power_tenths / 10
+        return self.read_reg(reg_addr=0x37) / 10
 
     def set_power(self, power):
         """
         Set power level setpoint with 0.1 % precision.
-
-        Converts from percent to permille and write register 0x37.
 
         Parameters
         ----------
         power : float
             Power level setpoint in percent w/ 0.1% precision. (0 <= P <= 100)
         """
-        register_address = 0x37
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         if (power < 0) or (power > 100):
             self.set_emission(False)
             self.set_power(0)
             raise ValueError('Power must be in the range [0, 100]. Turning off emission.')
-
         power_tenths = int(power * 10)
-        nkt.registerWriteU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            power_tenths,
-            -1
-        )
 
+        self.write_reg(reg_addr=0x37, reg_val=power_tenths)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'power to [{power}] %.')
 
@@ -585,21 +538,8 @@ class Fianium:
         nim_delay : float
             Delay time in seconds.
         """
-        register_address = 0x39
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         step = 9e-12  # Step size for delay is 9 ps
-        comm_result, delay = nkt.registerReadU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return delay * step
+        return self.read_reg(reg_addr=0x39) * step
 
     def set_nim_delay(self, nim_delay):
         """
@@ -615,25 +555,12 @@ class Fianium:
         nim_delay : float
             Delay time given in seconds. (0 <= nim_delay <= 9.207e-9)
         """
-        register_address = 0x39
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
         step = 9e-12  # Step size for delay is 9 ps
         int_delay = int(nim_delay/step)
-
         if (int_delay < 0) or (int_delay > 1023):
             raise ValueError('NIM delay value out of range [0, 9.207e-9].')
 
-        nkt.registerWriteU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            int_delay,
-            -1
-        )
-
+        self.write_reg(reg_addr=0x39, reg_val=int_delay)
         logger.info(f'Set NKT {self.__class__.__name__} on port [{self._portname}] '
             f'NIM delay to [{nim_delay}] seconds.')
 
@@ -647,20 +574,19 @@ class Fianium:
         int
             Current user setup bits.
         """
-        register_address = 0x3B
+        return self.read_reg(reg_addr=0x3B)
 
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
+    def set_user_setup_bits(self):
+        """
+        Read the value of user setup bits (register 0x3B).
 
-        comm_result, setup_bits = nkt.registerReadU16(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
+        Returns
+        -------
+        int
+            Current user setup bits.
+        """
+        return self.read_reg(reg_addr=0x3B)
 
-        return setup_bits
 
     @property
     def status_bits(self):
@@ -670,41 +596,32 @@ class Fianium:
         Returns
         -------
         tuple(int, str)
-            (status bits, Description).
+            (Bits, Description).
         """
-        register_address = 0x66
-
-        if self._portname is None:
-            raise RuntimeError('Not connected. Call connect() before any driver calls.')
-
-        comm_result, status_bits = nkt.registerReadU8(
-            self._portname,
-            self._module_address,
-            register_address,
-            -1
-        )
-        self._check_comm_result(comm_result)
-
-        return (status_bits, self.__class__.STATUS_BITS[status_bits])
+        status_bits = self.read_reg(reg_addr=0x66)
+        return (status_bits, self.STATUS_BITS[status_bits])
 
 if __name__ == "__main__":
     import time
 
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
 
-    with Fianium() as laser:
+    with Fianium(portname='COM4') as laser:
         print(f'status: {laser.status_bits}')
 
         print(f'emission: {laser.emission}')
         laser.set_emission(False)
 
-        print(f'setup: {laser.setup}')
-        # TODO
-        # laser.set_setup()
+        setup_bits, setup_str = laser.setup
+        print(f'setup: {setup_str}')
+        laser.set_setup(setup_bits)
 
-        print(f'interlock: {laser.interlock}')
-        # TODO
-        # laser.set_interlock()
+        interlock_bits, interlock_str = laser.interlock
+        print(f'interlock: {interlock_str}')
+        laser.set_interlock(interlock_bits)
+
+        max_pp = laser.max_pulse_picker_ratio
+        print(f'max pulse picker ratio: {max_pp}')
 
         pp = laser.pulse_picker_ratio
         print(f'pulse picker ratio: {pp}')
@@ -712,9 +629,9 @@ if __name__ == "__main__":
         print(f'pulse picker ratio: {laser.pulse_picker_ratio}')
         laser.set_pulse_picker_ratio(pp)
 
-        print(f'watchdog timer: {laser.watchdog_interval}')
-        # TODO
-        # laser.set_watchdog_interval()
+        watchdog = laser.watchdog_interval
+        print(f'watchdog interval: {watchdog}')
+        laser.set_watchdog_interval(watchdog)
 
         pow = laser.power_level
         print(f'power: {pow} %')
@@ -727,3 +644,5 @@ if __name__ == "__main__":
         laser.set_nim_delay(20e-12)
         print(f'NIM delay: {laser.nim_delay}')
         laser.set_nim_delay(delay)
+
+        print(f'user setup bits: {laser.user_setup_bits}')
