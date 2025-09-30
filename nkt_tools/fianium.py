@@ -606,7 +606,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    with Fianium(portname='COM4') as laser:
+    # test cases
+    with Fianium() as laser:
         print(f'status: {laser.status_bits}')
 
         print(f'emission: {laser.emission}')
